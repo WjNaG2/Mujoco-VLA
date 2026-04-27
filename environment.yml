@@ -1,0 +1,25 @@
+name: mujoco_vla
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - matplotlib
+  - pillow
+  - cloudpickle
+  - tqdm
+  - pip:
+      - mujoco
+      - gymnasium
+      - imageio
+      - opencv-python
+      - pyyaml
+      - tensorboard
+      - torch
+      - torchvision
+      - einops
+      - h5py
+      - scipy
+      - gymnasium[box2d]

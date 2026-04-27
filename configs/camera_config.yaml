@@ -1,0 +1,30 @@
+# ============================================================
+# RGBD 相机配置文件
+# 用于定义场景中每个相机的分辨率、渲染参数等
+# ============================================================
+
+# 渲染输出目录
+output_dir: "data/samples/camera_captures"
+
+# 默认图像尺寸（宽 x 高）
+default_width: 640
+default_height: 480
+
+# 相机列表配置
+cameras:
+  camera_front:       # 前置相机 ID（与场景 XML 中定义的 name 对应）
+    width: 640
+    height: 480
+    fovy: 45          # 垂直视场角（度），应匹配 XML 中的设置
+    enabled: true     # 是否启用该相机
+
+  camera_side:        # 侧上方相机 ID
+    width: 640
+    height: 480
+    fovy: 45
+    enabled: true     # 启用
+
+# 数据存储格式
+save_format:
+  rgb: "png"          # RGB 图片格式：png 或 jpg
+  depth: "npy"        # Depth 数据格式：npy（保存原始浮点数组）

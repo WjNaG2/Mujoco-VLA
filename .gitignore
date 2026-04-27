@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.env
+.venv/
+
+# Data
+data/raw/
+data/processed/
+
+# MuJoCo and local config
+*.h5
+*.npz
+*.log
+*.mp4
+
+# OS
+.DS_Store
+Miniconda3-latest-Linux-x86_64.sh

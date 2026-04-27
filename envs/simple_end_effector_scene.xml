@@ -1,0 +1,139 @@
+<!--
+  简单的 Mujoco 上半身双臂场景 —— 用于末端跟随 + RGBD 相机验证
+
+  设计目标：
+  - 包含左右双臂（肩部俯仰/偏航 + 肘部俯仰，共 6 DOF）
+  - 提供可视化目标点（红/蓝球），便于调试末端位置跟随
+  - 配置前后两个固定视角相机，用于 RGBD 采集验证
+  - 所有关节使用 position actuator，方便通过位置指令控制
+
+  关节说明：
+  - shoulder_yaw:   绕 Z 轴旋转（左右摆臂）
+  - shoulder_pitch: 绕 Y 轴旋转（抬臂/落臂）
+  - elbow_pitch:    绕 Y 轴旋转（屈肘/伸肘）
+
+  相机说明：
+  - camera_front: 从前方观察整个场景
+  - camera_side:  从侧上方观察
+
+  关键设计：
+  - 初始关节角度设为非奇异位形（手臂微屈），避免 IK 在零点处的雅可比奇异问题
+  - 末端执行器通过 site 标记，方便 mj_jacSite 计算雅可比矩阵
+-->
+<mujoco model="upper_body_bimanual">
+  <!-- 编译器和仿真选项 -->
+  <compiler angle='degree'/>
+  <option gravity='0 0 -9.81' timestep='0.005'/>
+
+  <!-- 材质定义 -->
+  <asset>
+    <material name='ground_mat' rgba='0.8 0.8 0.8 1'/>
+    <material name='robot_mat' rgba='0.2 0.5 0.8 1'/>
+    <material name='target_right' rgba='1 0.2 0.2 1'/>
+    <material name='target_left' rgba='0.2 0.2 1 1'/>
+    <material name='ee_green' rgba='0 1 0 0.8'/>
+    <material name='ee_blue' rgba='0 0.6 1 0.8'/>
+  </asset>
+
+  <worldbody>
+    <!-- 地面 -->
+    <geom name='floor' type='plane' size='5 5 0.1' material='ground_mat'/>
+
+    <!-- ==================== 右臂（从机器人底座出发） ==================== -->
+    <!--
+      运动学结构（3 DOF，用于末端位置跟随）：
+      关节1 (shoulder_yaw):   绕 Z 轴旋转 → 控制左右摆动
+      关节2 (shoulder_pitch): 绕 Y 轴旋转 → 控制抬臂/落臂
+      关节3 (elbow):          绕 Y 轴旋转 → 控制前臂屈伸
+      其中 Z 轴提供侧向自由度，两个 Y 轴在矢状面内提供 2 DOF，
+      共同实现三维空间末端位置控制。
+      初始位形保持肘部弯曲（约 60°），避免因手臂完全伸直导致的秩亏损。
+
+      ref 参考位（关节零位对应的物理角度）：
+        shoulder_yaw=0°, shoulder_pitch=-20°, elbow=60°
+
+      qpos0 初始位（相对于 ref 的偏移量）：
+        shoulder_yaw=0°, shoulder_pitch=0°, elbow=0°
+      即实际物理角度：shoulder_yaw=0°, shoulder_pitch=-20°, elbow=60°
+    -->
+    <body name='r_shoulder' pos='0.2 0.0 0.35'>
+      <joint name='r_shoulder_yaw' type='hinge' axis='0 0 1' range='-90 90' damping='0.8' ref='0.0'/>
+      <geom type='sphere' size='0.04' material='robot_mat'/>
+      <body name='r_upper_arm' pos='0 0 0'>
+        <joint name='r_shoulder_pitch' type='hinge' axis='0 1 0' range='-175 10' damping='0.8' ref='-20'/>
+        <geom type='capsule' fromto='0 0 0 0.25 0 0' size='0.035' material='robot_mat'/>
+        <body name='r_elbow' pos='0.25 0 0'>
+          <joint name='r_elbow' type='hinge' axis='0 1 0' range='-120 120' damping='0.5' ref='60'/>
+          <geom type='sphere' size='0.03' material='robot_mat'/>
+          <body name='r_forearm' pos='0 0 0'>
+            <geom type='capsule' fromto='0 0 0 0.20 0 0' size='0.03' material='robot_mat'/>
+            <!-- 右臂末端执行器标记点（site），用于获取末端位置和雅可比 -->
+            <site name='r_ee_site' pos='0.20 0 0' size='0.03' type='sphere' material='ee_green'/>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- ==================== 左臂（与右臂对称） ==================== -->
+    <!--
+      运动学结构（3 DOF，与右臂对称）：
+      关节1 (l_shoulder_yaw):   绕 Z 轴旋转 → 左右摆动
+      关节2 (l_shoulder_pitch): 绕 Y 轴旋转 → 抬臂/落臂
+      关节3 (l_elbow):          绕 Y 轴旋转 → 前臂屈伸
+
+      ref 参考位：
+        shoulder_yaw=0°, shoulder_pitch=-20°, elbow=-60°
+      （负号表示左臂肘部弯曲方向与右臂相反，实现对称）
+    -->
+    <body name='l_shoulder' pos='-0.2 0.0 0.35'>
+      <joint name='l_shoulder_yaw' type='hinge' axis='0 0 1' range='-90 90' damping='0.8' ref='0.0'/>
+      <geom type='sphere' size='0.04' material='robot_mat'/>
+      <body name='l_upper_arm' pos='0 0 0'>
+        <joint name='l_shoulder_pitch' type='hinge' axis='0 1 0' range='-175 10' damping='0.8' ref='-20'/>
+        <geom type='capsule' fromto='0 0 0 0.25 0 0' size='0.035' material='robot_mat'/>
+        <body name='l_elbow' pos='0.25 0 0'>
+          <joint name='l_elbow' type='hinge' axis='0 1 0' range='-120 120' damping='0.5' ref='-60'/>
+          <geom type='sphere' size='0.03' material='robot_mat'/>
+          <body name='l_forearm' pos='0 0 0'>
+            <geom type='capsule' fromto='0 0 0 0.20 0 0' size='0.03' material='robot_mat'/>
+            <!-- 左臂末端执行器标记点 -->
+            <site name='l_ee_site' pos='0.20 0 0' size='0.03' type='sphere' material='ee_blue'/>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- ==================== 可视化目标点 ==================== -->
+    <!-- 右手目标点（红色）：初始在右臂前方 -->
+    <body name='target_right' pos='0.5 0.2 0.4'>
+      <geom type='sphere' size='0.04' material='target_right'/>
+      <site name='target_right_site' pos='0 0 0' size='0.04' type='sphere' rgba='1 0.2 0.2 0.3'/>
+    </body>
+
+    <!-- 左手目标点（蓝色）：初始在左臂前方 -->
+    <body name='target_left' pos='-0.5 -0.2 0.4'>
+      <geom type='sphere' size='0.04' material='target_left'/>
+      <site name='target_left_site' pos='0 0 0' size='0.04' type='sphere' rgba='0.2 0.2 1 0.3'/>
+    </body>
+
+    <!-- ==================== 相机 ==================== -->
+    <!-- 前置相机：从正面观察机器人和目标点 -->
+    <camera name='camera_front' pos='0.0 -1.2 0.6' quat='0.707 0.0 0.0 0.707' fovy='45'/>
+
+    <!-- 侧上方相机：从右侧俯瞰场景 -->
+    <camera name='camera_side' pos='1.2 0.0 1.0' quat='0.5 -0.5 0.5 -0.5' fovy='45'/>
+  </worldbody>
+
+  <!-- 执行器：使用 position 控制模式，kp 越大响应越快但可能振荡 -->
+  <actuator>
+    <!-- 右臂执行器 -->
+    <position name='r_shoulder_yaw_act' joint='r_shoulder_yaw' kp='30' ctrlrange='-1.57 1.57'/>
+    <position name='r_shoulder_pitch_act' joint='r_shoulder_pitch' kp='30' ctrlrange='-2.53 0.17'/>
+    <position name='r_elbow_act' joint='r_elbow' kp='20' ctrlrange='-1.57 1.57'/>
+
+    <!-- 左臂执行器 -->
+    <position name='l_shoulder_yaw_act' joint='l_shoulder_yaw' kp='30' ctrlrange='-1.57 1.57'/>
+    <position name='l_shoulder_pitch_act' joint='l_shoulder_pitch' kp='30' ctrlrange='-2.53 0.17'/>
+    <position name='l_elbow_act' joint='l_elbow' kp='20' ctrlrange='-1.57 1.57'/>
+  </actuator>
+</mujoco>
