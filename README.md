@@ -133,6 +133,10 @@ git clone https://github.com/unitreerobotics/xr_teleoperate.git third_party/xr_t
 
 ### 运行演示
 
+#### 方式 A：后台运行 + 数据保存（无窗口）
+
+适合批量测试和数据采集，运行后自动保存结果到 `data/samples/`：
+
 ```bash
 # 1. 采集 RGBD 图像（输出到 data/samples/camera_captures/）
 python scripts/capture_rgbd_demo.py
@@ -145,8 +149,32 @@ python scripts/run_follow_demo.py --mode circle
 
 # 4. 双臂同时跟随
 python scripts/run_follow_demo.py --mode bimanual
+```
 
-# 5. 启动可视化场景
+#### 方式 B：带 MuJoCo 可视化窗口（推荐新手使用）
+
+适合调试和观察，会弹出 MuJoCo 交互式窗口，实时显示机器人跟随目标点的动画：
+
+```bash
+# 静态单点跟随（默认）
+python scripts/run_follow_visual.py
+
+# 圆形轨迹跟随（目标点沿圆形移动）
+python scripts/run_follow_visual.py --mode circle
+
+# 双臂同时跟随
+python scripts/run_follow_visual.py --mode bimanual
+```
+
+操作说明（MuJoCo viewer）：
+- 鼠标左键拖拽：旋转视角
+- 鼠标滚轮：缩放
+- 空格键：暂停/继续仿真
+- ESC 键：退出
+
+#### 方式 C：仅启动可视化场景
+
+```bash
 python envs/launch_scene.py --scene envs/simple_end_effector_scene.xml
 ```
 

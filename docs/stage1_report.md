@@ -34,7 +34,8 @@ mujoco_vla_project/                              # 项目根目录
 ├── scripts/                                     # 演示与工具脚本
 │   ├── launch_scene.sh               # 场景启动脚本（更新版）
 │   ├── capture_rgbd_demo.py          # RGBD 相机采集演示
-│   └── run_follow_demo.py            # 完整末端跟随演示
+│   ├── run_follow_demo.py            # 完整末端跟随演示（后台运行 + 数据保存）
+│   └── run_follow_visual.py          # 带 MuJoCo 可视化窗口的跟随演示
 │
 ├── data/
 │   └── samples/
@@ -310,6 +311,10 @@ python scripts/capture_rgbd_demo.py
 
 ### 5.3 运行末端跟随演示
 
+#### 方式 A：后台运行 + 数据保存（无窗口）
+
+适合批量测试和数据采集，运行后自动保存结果到 `data/samples/`：
+
 ```bash
 # 静态单点跟随（版本 A）
 python scripts/run_follow_demo.py --mode static
@@ -320,6 +325,27 @@ python scripts/run_follow_demo.py --mode circle
 # 双臂同时跟随
 python scripts/run_follow_demo.py --mode bimanual
 ```
+
+#### 方式 B：带 MuJoCo 可视化窗口（推荐新手使用）
+
+适合调试和观察，会弹出 MuJoCo 交互式窗口，实时显示机器人跟随目标点的动画：
+
+```bash
+# 静态单点跟随（默认）
+python scripts/run_follow_visual.py
+
+# 圆形轨迹跟随（目标点沿圆形移动）
+python scripts/run_follow_visual.py --mode circle
+
+# 双臂同时跟随
+python scripts/run_follow_visual.py --mode bimanual
+```
+
+操作说明（MuJoCo viewer）：
+- 鼠标左键拖拽：旋转视角
+- 鼠标滚轮：缩放
+- 空格键：暂停/继续仿真
+- ESC 键：退出
 
 ### 5.4 启动可视化场景
 
