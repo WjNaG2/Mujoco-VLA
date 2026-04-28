@@ -1,0 +1,13 @@
+End-effector Following Demo - Run Summary
+==================================================
+Mode: circle
+Total Steps: 2000
+Simulation Time: 10.00 s
+Wall Clock Time: 1.84 s
+Saved RGBD Frames: 200
+
+--- Tracking Error Statistics ---
+Final Error: 0.0442 m
+Average Error: 0.0913 m
+Max Error: 0.2320 m
+First entry into 5cm error range: step 80

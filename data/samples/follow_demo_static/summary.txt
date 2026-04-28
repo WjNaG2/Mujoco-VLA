@@ -1,13 +1,13 @@
-末端位置跟随演示 —— 运行摘要
+End-effector Following Demo - Run Summary
 ==================================================
-模式: static
-总步数: 2000
-仿真时间: 10.00 秒
-实际运行时间: 2.59 秒
-保存 RGBD 帧数: 200
+Mode: static
+Total Steps: 2000
+Simulation Time: 10.00 s
+Wall Clock Time: 1.87 s
+Saved RGBD Frames: 200
 
---- 跟踪误差统计 ---
-最终误差: 0.0697 米
-平均误差: 0.1035 米
-最大误差: 0.4990 米
-未进入 5cm 误差范围
+--- Tracking Error Statistics ---
+Final Error: 0.0000 m
+Average Error: 0.0107 m
+Max Error: 0.1988 m
+First entry into 5cm error range: step 120

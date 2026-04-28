@@ -97,15 +97,34 @@ def main():
 
     if args.mode == "static":
         # 版本 A：静态单点跟随
-        target_gen = StaticTargetGenerator(pos=[0.5, 0.2, 0.4])
+        # 【可达性】根据选择的臂设置不同的目标点（确保在工作空间内）
+        if args.side == "right":
+            # 右肩位置 [0.2, 0.0, 0.35]
+            # 目标 [0.5, 0.1, 0.4] 需 yaw 约 18° ✅ 可达（0.0000m 误差）
+            # 注意 y=0.2 会导致 yaw 达到 90° 限位，无法收敛
+            static_pos = [0.5, 0.1, 0.4]
+        else:
+            # 【可达性】左臂初始 EE 在 [0.238, 0.0, 0.282]，需向左摆动到负 x 区域
+            # 左肩位置 [-0.2, 0.0, 0.35]。目标 [-0.15, -0.15, 0.35] 需 yaw 约 -72° ✅
+            static_pos = [-0.15, -0.15, 0.35]
+        target_gen = StaticTargetGenerator(pos=static_pos)
         controller = EndEffectorController(env, side=args.side, kp=args.kp)
         print(f"  目标生成器: {target_gen}")
         print(f"  控制器: 单臂({args.side}), kp={args.kp}")
 
     elif args.mode == "circle":
         # 版本 C：圆形轨迹
+        # 【可达性】根据选择的臂设置不同的圆心位置
+        if args.side == "right":
+            # 圆心距右肩 ~0.32m，半径 0.18m ✅ 可达
+            circle_center = [0.4, 0.0, 0.4]
+            circle_radius = 0.18
+        else:
+            # 圆心距左肩 ~0.14m，半径 0.12m ✅ 可达
+            circle_center = [-0.3, 0.0, 0.3]
+            circle_radius = 0.12
         target_gen = CircleTargetGenerator(
-            center=[0.4, 0.0, 0.4], radius=0.18, axis="xz", speed=0.8
+            center=circle_center, radius=circle_radius, axis="xz", speed=0.8
         )
         controller = EndEffectorController(env, side=args.side, kp=args.kp)
         print(f"  目标生成器: {target_gen}")
@@ -163,9 +182,13 @@ def main():
                 error = controller.update(target)
                 joint_targets = controller.joint_targets
                 errors.append(error)
-                # 更新可视化目标点位置（圆形轨迹时目标点在移动）
-                if args.mode == "circle":
+                # 【修复】根据 args.side 更新对应的目标球位置
+                # 红色球 = "right" 目标，蓝色球 = "left" 目标
+                # 静态模式仅在开始时设置一次（后续位置不变，但为确保首次设置正确也更新）
+                if args.side == "right":
                     env.set_target_position("right", target)
+                else:  # left
+                    env.set_target_position("left", target)
 
             # ---- 设置关节目标并仿真一步 ----
             env.set_joint_targets(joint_targets)
@@ -192,17 +215,17 @@ def main():
     # ==========================================================
     print()
     print("-" * 50)
-    print("📊 运行结果摘要:")
+    print("Result Summary:")
     if len(errors) > 0:
         errors_arr = np.array(errors)
-        print(f"  最终误差: {errors_arr[-1]:.4f} 米")
-        print(f"  平均误差: {np.mean(errors_arr):.4f} 米")
-        print(f"  最大误差: {np.max(errors_arr):.4f} 米")
-    print(f"  仿真步数: {step}")
-    print(f"  实际运行时间: {real_elapsed:.2f} 秒")
+        print(f"  Final Error: {errors_arr[-1]:.4f} m")
+        print(f"  Average Error: {np.mean(errors_arr):.4f} m")
+        print(f"  Max Error: {np.max(errors_arr):.4f} m")
+    print(f"  Simulation Steps: {step}")
+    print(f"  Wall Clock Time: {real_elapsed:.2f} s")
     print()
     print("=" * 60)
-    print("✅ 演示完成！可视化窗口已关闭。")
+    print("Demo complete! Visualization window closed.")
     print("=" * 60)
 
     env.close()

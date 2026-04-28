@@ -35,12 +35,13 @@ mujoco_vla_project/                              # 项目根目录
 │   ├── launch_scene.sh               # 场景启动脚本（更新版）
 │   ├── capture_rgbd_demo.py          # RGBD 相机采集演示
 │   ├── run_follow_demo.py            # 完整末端跟随演示（后台运行 + 数据保存）
-│   └── run_follow_visual.py          # 带 MuJoCo 可视化窗口的跟随演示
+│   ├── run_follow_visual.py          # 带 MuJoCo 可视化窗口的跟随演示
+│   └── inspect_recorded_data.py      # ⭐ 数据可视化核查脚本（新增）
 │
 ├── data/
 │   └── samples/
-│       ├── camera_captures/          # RGBD 采集输出
-│       └── follow_demo_*/            # 跟随演示输出
+│       ├── camera_captures/          # RGBD 采集输出（单帧验证）
+│       └── follow_demo_*/            # 跟随演示输出（完整 episode）
 │
 └── ... (其他目录结构保持不变)
 ```
@@ -136,6 +137,24 @@ python scripts/run_follow_demo.py --mode bimanual     # 双臂跟随
 ### 3.8 相机配置：`configs/camera_config.yaml`
 
 YAML 格式的相机分辨率与启用配置，便于扩展多相机设置。
+
+### 3.9 ⭐ 数据核查脚本：`scripts/inspect_recorded_data.py`
+
+数据可视化核查脚本，用于检查采集到的 RGBD 和 episode 数据是否正确。
+支持两种检查模式：
+
+**模式 A：检查 RGBD 采集输出**（camera_captures 目录）
+- 显示 RGB 图像和 Depth 伪彩色图
+- 检查深度值范围是否合理
+- 验证 camera_params.txt 中的内外参
+
+**模式 B：检查跟随演示输出**（episode_data.npz）
+- 绘制关节目标 vs 实际位置对比图（验证控制输入是否正确）
+- 验证 actuator_ctrl 是否与 joint_targets 一致（验证 set_joint_targets 写入）
+- 绘制末端跟踪误差曲线（验证最终输出质量）
+- 绘制 3D 轨迹对比图（目标轨迹 vs 实际轨迹）
+
+详见第 7 节的使用说明。
 
 ---
 
@@ -355,24 +374,220 @@ python envs/launch_scene.py --scene envs/simple_end_effector_scene.xml
 
 ---
 
-## 6. 完成标准检查
+## 6. 数据输出与验证（新增章节）
 
-| 标准 | 状态 |
-|------|------|
-| 能在 Mujoco 中给定末端目标点 | ✅ 通过 `set_joint_targets()` |
-| 机器人上半身能稳定接近目标点 | ✅ IK 控制器误差 < 5cm |
-| 能同步记录 RGB 图像 | ✅ 通过 `capture()` 的 `rgb` 字段 |
-| 能同步记录 Depth 图像 | ✅ 通过 `capture()` 的 `depth` 字段 |
-| 能记录 joint state | ✅ 通过 `get_observation()` |
-| 能记录 target position | ✅ 通过 `get_observation()` |
-| 能记录 eef position | ✅ 通过 `get_observation()` |
-| 多次重复运行结果一致 | ✅ 确定性仿真 |
-| RGB 与 Depth 通过时间戳对齐 | ✅ 同帧 `data.time` |
-| 有相机内参和外参输出 | ✅ 通过 `capture()` 的 `intrinsics` / `extrinsics` |
+本章回答两个关键问题：
+1. **控制输出（joint target / actuator control / joint velocity）被输出到了哪里？**
+2. **如何直观地获取和验证 RGBD 相机记录的数据是否正确？**
 
 ---
 
-## 7. 常见问题
+### 6.1 控制输入/输出数据的流向
+
+完整的数据流如下：
+
+```
+【用户输入】给定末端目标位置 (p_target_right, p_target_left)
+    │
+    ▼
+IK 控制器 (EndEffectorController.update)
+    │  计算: e = p_target - p_current
+    │       v = Kp * e
+    │       q_dot = J^† · v
+    │       q_target += q_dot * dt
+    │
+    ▼  ~~~~~~~~~ 【控制输入】记录到 episode_data.npz ~~~~~~~~~
+joint_targets (6,)   ← IK 控制器输出的**期望**关节角度（弧度）
+    │
+    ▼
+env.set_joint_targets(joint_targets)  → 写入 data.ctrl
+    │
+    ▼  ~~~~~~~~~ 【控制输入】记录到 episode_data.npz ~~~~~~~~~
+actuator_ctrl (6,)   ← 实际写入 MuJoCo actuator 的 ctrl 值（弧度）
+    │
+    ▼
+env.step()  →  MuJoCo 物理仿真
+    │
+    ▼  ~~~~~~~~~ 【机器人状态】记录到 episode_data.npz ~~~~~~~~~
+joint_positions (6,)  ← 仿真后的**实际**关节角度（弧度）
+joint_velocities (6,) ← 仿真后的**实际**关节速度（弧度/秒）
+r_ee_pos / l_ee_pos  ← 末端实际位置（米，世界坐标系）
+    │
+    ▼
+误差 = ‖p_target - p_actual‖  →  记录到 episode_data.npz 的 errors
+```
+
+#### 关键验证点
+
+- **joint_targets vs joint_positions**: 表示"期望"和"实际"的差距。理想情况下两者应该非常接近（因为 position actuator 的跟踪精度很高）。
+- **actuator_ctrl vs joint_targets**: 应该完全一致，因为 `set_joint_targets()` 只是将 joint_targets 拷贝到 `data.ctrl`。如果两者有差异说明代码有 bug。
+- **errors**: 末端位置的最终跟踪误差。应该随时间收敛到接近 0。
+
+---
+
+### 6.2 episode_data.npz 字段详解
+
+运行 `python scripts/run_follow_demo.py` 后，输出目录下的 `episode_data.npz` 包含以下字段：
+
+| 字段名 | 形状 | 含义 | 类别 |
+|--------|------|------|------|
+| `joint_targets` | (N, 6) | 【控制输入】IK 控制器输出的期望关节角度（弧度） | 控制输入 |
+| `actuator_ctrl` | (N, 6) | 【控制输入】实际写入 MuJoCo ctrl 的值（应与 joint_targets 一致） | 控制输入 |
+| `joint_positions` | (N, 6) | 【机器人状态】MuJoCo 仿真后的实际关节角度（弧度） | 机器人状态 |
+| `joint_velocities` | (N, 6) | 【机器人状态】MuJoCo 仿真后的实际关节速度（弧度/秒） | 机器人状态 |
+| `errors` | (N,) | 【末端跟踪】末端目标位置与实际位置的欧氏距离（米） | 末端跟踪 |
+| `target_positions` | (N, 3) | 【末端跟踪】给定的末端目标位置（世界坐标系，米） | 末端跟踪 |
+| `actual_positions` | (N, 3) | 【末端跟踪】仿真得到的末端实际位置（世界坐标系，米） | 末端跟踪 |
+| `timestamps` | (N,) | 【时间戳】每步的仿真时间（秒） | 元信息 |
+| `mode` | str | 【元信息】运行模式名称 | 元信息 |
+
+其中 N = 仿真总步数（默认 2000）。
+
+> **注意**：`joint_targets` 是 6 维数组，顺序与场景 XML 中定义的 actuator 一致：
+> [r_shoulder_yaw, r_shoulder_pitch, r_elbow, l_shoulder_yaw, l_shoulder_pitch, l_elbow]
+
+---
+
+### 6.3 RGBD 相机采集输出详解
+
+运行 `python scripts/capture_rgbd_demo.py` 后输出到 `data/samples/camera_captures/`：
+
+#### `camera_front_rgb.png` 是什么？
+
+这是 MuJoCo 离屏渲染器输出的 RGB 图像。它展示的是**从前置相机视角看到的仿真场景**：
+
+```
+┌──────────────────────────────────────┐
+│  RGB 图像 (640×480, uint8)           │
+│                                      │
+│  你可以直观看到：                      │
+│  • 机器人上半身（双肩+双肘）            │
+│  • 红色球 = 右手目标点                 │
+│  • 蓝色球 = 左手目标点                 │
+│  • 地面网格                           │
+│                                      │
+│  用途：检查场景是否正常渲染、             │
+│  目标点位置是否在视野内、                 │
+│  相机视角是否合适                       │
+└──────────────────────────────────────┘
+```
+
+#### `camera_front_depth.npy` 是什么？
+
+这是与 RGB 图像**同帧**的深度图，保存为 NumPy 数组：
+
+```python
+depth = np.load("camera_front_depth.npy")
+# depth.shape = (480, 640), dtype = float32
+# 每个像素值 = 相机到物体的垂直距离（米）
+# 远平面（>50米）的像素值为 50.0
+```
+
+#### `camera_front_depth_vis.png` 是什么？
+
+这是深度图的伪彩色可视化（便于肉眼查看）：
+- 颜色越偏紫 → 越近
+- 颜色越偏黄 → 越远
+- 使用 viridis 颜色映射
+
+#### 如何验证 RGB 和 Depth 是否对齐？
+
+1. **时间戳验证**：RGB 和 Depth 使用同一个 `data.time` 作为时间戳，帧级严格对齐
+2. **可视化验证**：运行 `python scripts/inspect_recorded_data.py --dir data/samples/camera_captures` 会弹出对比图，左侧是 RGB，右侧是 Depth 伪彩色图，可以肉眼确认两者内容一致
+3. **尺寸验证**：RGB 和 Depth 的分辨率完全相同（640×480），每个像素一一对应
+
+#### RGBD 采集输出文件说明
+
+| 文件 | 含义 | 如何查看 |
+|------|------|----------|
+| `camera_front_rgb.png` | RGB 彩色图像 | 用图片浏览器直接打开 |
+| `camera_front_depth.npy` | 深度原始数据（float32 米） | `np.load(...)` 加载 |
+| `camera_front_depth_vis.png` | 深度伪彩色可视化 | 用图片浏览器直接打开 |
+| `camera_params.txt` | 相机内参 K 和外参 [R\|t] | 文本编辑器打开 |
+
+---
+
+### 6.4 使用数据核查脚本验证数据
+
+`scripts/inspect_recorded_data.py` 提供了一个统一的入口，用于直观检查采集到的数据是否正确。
+
+#### 检查 RGBD 采集输出
+
+```bash
+# 检查 camera_captures 目录下的 RGBD 数据
+python scripts/inspect_recorded_data.py --dir data/samples/camera_captures
+```
+
+会依次弹出：
+- 每个相机的 RGB 图像 vs Depth 伪彩色对比图
+- 控制台输出深度值范围、有效/无效点统计
+
+✅ **通过标准**：
+- RGB 图像清晰可见机器人上半身和目标点
+- Depth 有效值范围合理（通常 1~5 米）
+- Depth 中机器人轮廓与 RGB 中对应位置一致
+
+#### 检查跟随演示输出
+
+```bash
+# 检查 episode_data.npz 中的完整数据
+python scripts/inspect_recorded_data.py --dir data/samples/follow_demo_static
+
+# 或直接指定 npz 文件
+python scripts/inspect_recorded_data.py --npz data/samples/follow_demo_static/episode_data.npz
+```
+
+会依次弹出 **4 张检查图**：
+
+**图 1：关节目标 vs 实际位置**（控制输入 vs 机器人状态）
+- 蓝色虚线 = `joint_targets`（期望角度）
+- 红色实线 = `joint_positions`（实际角度）
+- ✅ 两者应几乎重合（差异 < 0.01 rad）
+
+**图 2：actuator_ctrl 验证**
+- 绘制 `|actuator_ctrl - joint_targets|`
+- ✅ 偏差应为 0（如果显示"完全一致"绿色提示）
+
+**图 3：末端跟踪误差**
+- 蓝色曲线 = 末端位置误差随时间变化
+- 红色虚线 = 5cm 阈值
+- ✅ 误差应收敛到 5cm 以下
+
+**图 4：3D 轨迹对比**
+- 红色虚线 = 目标轨迹
+- 蓝色实线 = 实际轨迹
+- ✅ 两者应基本重合
+
+---
+
+## 7. 完成标准检查
+
+| 标准 | 状态 | 如何验证 |
+|------|------|----------|
+| 能在 Mujoco 中给定末端目标点 | ✅ | 通过 `set_joint_targets()` |
+| 机器人上半身能稳定接近目标点 | ✅ | 检查 `errors` 是否 < 5cm |
+| 能同步记录 RGB 图像 | ✅ | `capture()` 返回 `rgb` 字段 |
+| 能同步记录 Depth 图像 | ✅ | `capture()` 返回 `depth` 字段 |
+| 能记录控制输入（joint_targets） | ✅ | `episode_data.npz` 的 `joint_targets` |
+| 能记录控制输入（actuator_ctrl） | ✅ | `episode_data.npz` 的 `actuator_ctrl` |
+| 能记录机器人状态（joint_positions + joint_velocities） | ✅ | `episode_data.npz` 的对应字段 |
+| 能记录 target position | ✅ | `episode_data.npz` 的 `target_positions` |
+| 能记录 eef position | ✅ | `episode_data.npz` 的 `actual_positions` |
+| 多次重复运行结果一致 | ✅ | 确定性仿真 |
+| RGB 与 Depth 通过时间戳对齐 | ✅ | 同帧 `data.time` |
+| 有相机内参和外参输出 | ✅ | `capture()` 的 `intrinsics` / `extrinsics` |
+
+---
+
+## 8. 常见问题
+
+### Q: camera_front_rgb.png 这个图片体现了什么信息？
+
+A: 这张图是 MuJoCo 场景从前置相机视角的截图，展示了：
+- 仿真环境中的机器人上半身模型（双肩、双肘）
+- 红色球体（右手目标点）、蓝色球体（左手目标点）
+- 地面和背景
+- 你可以通过它检查：场景是否正常加载、目标点位置是否正确、相机视角是否合适
 
 ### Q: 为什么 RGB 和 Depth 需要渲染两次？
 A: MuJoCo 的 Renderer 在单次渲染下只能输出一种数据类型。需要先渲染 RGB，开启 depth mode 后再渲染一次得到 depth。这是 MuJoCo 的设计限制，但同帧数据严格对齐。
@@ -391,9 +606,23 @@ A: 两步操作：
 1. 在 `simple_end_effector_scene.xml` 中添加 `<camera>` 定义
 2. 在 `camera_config.yaml` 中添加对应相机的配置
 
+### Q: 如何使用 inspect_recorded_data.py 检查我的数据？
+A: 提供了三种使用方式：
+```bash
+# 1. 检查 RGBD 采集输出
+python scripts/inspect_recorded_data.py --dir data/samples/camera_captures
+
+# 2. 检查跟随演示输出（自动找到 npz 文件）
+python scripts/inspect_recorded_data.py --dir data/samples/follow_demo_static
+
+# 3. 直接指定 npz 文件
+python scripts/inspect_recorded_data.py --npz data/samples/follow_demo_static/episode_data.npz
+```
+该脚本会弹出多个对比图表，让你直观验证数据是否正确。
+
 ---
 
-## 8. 下一步（Phase 2）
+## 9. 下一步（Phase 2）
 
 阶段 1 完成后，下一阶段（Phase 2）将把 `xr_teleoperate` 的遥操输入接入 Mujoco，
 实现 XR → Bridge → 末端目标位置 → 机器人跟随的完整链路。

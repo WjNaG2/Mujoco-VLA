@@ -40,22 +40,22 @@ from envs.rgbd_camera import RGBDCamera
 
 def visualize_depth(depth: np.ndarray, save_path: str):
     """
-    将深度图可视化为灰度图并保存
+    Visualize depth map as a pseudo-color image and save
 
-    参数:
-        depth:    ndarray (H, W), float32, 深度值（米）
-        save_path: 保存路径
+    Args:
+        depth:    ndarray (H, W), float32, depth values (meters)
+        save_path: save path
     """
-    # 将深度值归一化到 [0, 1] 范围便于显示
-    valid = depth < 49.0  # 剔除远平面
+    # Normalize depth values to [0, 1] for display
+    valid = depth < 49.0  # Exclude far plane
     depth_vis = np.zeros_like(depth)
     if valid.any():
         d_min = depth[valid].min()
         d_max = depth[valid].max()
         depth_vis[valid] = (depth[valid] - d_min) / (d_max - d_min + 1e-6)
-    # 保存为伪彩色图
+    # Save as pseudo-color image
     plt.imsave(save_path, depth_vis, cmap="viridis")
-    print(f"  [保存] 深度可视化图 -> {save_path}")
+    print(f"  [Saved] Depth visualization -> {save_path}")
 
 
 def main():
