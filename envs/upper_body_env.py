@@ -292,3 +292,19 @@ class UpperBodyEnv:
         清理资源（目前无需特殊清理）
         """
         pass
+
+    def launch_viewer(self):
+        """
+        启动 MuJoCo 交互式 viewer，用于可视化仿真。
+
+        返回:
+            viewer 对象，可用于后续调用 viewer.sync() 或 viewer.close().
+        """
+        try:
+            from mujoco.viewer import launch_passive
+        except ImportError as e:
+            raise RuntimeError(
+                "无法导入 mujoco.viewer，无法启动可视化窗口。"
+            ) from e
+
+        return launch_passive(self.model, self.data)

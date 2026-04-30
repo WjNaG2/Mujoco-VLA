@@ -11,9 +11,10 @@
 逐步完成以下四件事：
 
 1. ✅ **（已完成）** 在 Mujoco 中搭建上半身双臂场景，打通 **RGBD 相机接口**
-2. □ 将 XR 遥操输入接入 Mujoco，实现上半身末端位置跟随
+2. ✅ **（已完成）** 将 XR 遥操输入接入 Mujoco，实现上半身末端位置跟随
 3. □ 采集 50 组仅上半身的遥操作数据
 4. □ 编写统一 simulation benchmark，对比 ACT / GR00T / DP3
+
 
 ---
 
@@ -52,15 +53,17 @@ mujoco_vla_project/
 │   ├── train_act.sh                   # ACT 训练
 │   └── eval_all.sh                    # Benchmark 评估
 │
-├── teleop/                            # XR 遥操桥接代码
-│   └── run_teleop.py
+├── teleop/                            # XR 遥操桥接代码 ⭐ 阶段 2 核心
+│   ├── teleop_bridge.py               # ⭐⭐ TeleData + 桥接层 + 模拟 XR 源
+│   └── run_xr_to_mujoco_demo.py       # ⭐  完整链路演示脚本
 │
 ├── data/
 │   ├── raw/                           # 原始录制数据
 │   ├── processed/                     # 整理后的数据
 │   └── samples/                       # ⭐ 样例数据输出目录
 │       ├── camera_captures/           #   RGBD 采集输出
-│       └── follow_demo_*/             #   跟随演示输出
+│       ├── follow_demo_*/             #   跟随演示输出
+│       └── xr_teleop_demo/            # ★ 新增: XR 桥接演示输出
 │
 ├── benchmark/                         # Benchmark 相关
 │   ├── datasets/
@@ -72,6 +75,7 @@ mujoco_vla_project/
 │
 ├── docs/
 │   ├── stage1_report.md               # ⭐⭐ 阶段 1 技术报告（含 RGBD 接口详解）
+│   ├── stage2_report.md               # ★ 新增: 阶段 2 技术报告（XR 桥接层）
 │   └── undergrad_guide.md             # 本科生快速上手指南
 │
 └── third_party/
@@ -225,11 +229,80 @@ result = cam.capture()
 
 ---
 
+## 阶段 2：XR 遥操桥接层（已完成）
+
+### 功能概览
+
+| 模块 | 文件 | 功能 |
+|------|------|------|
+| ⭐⭐ 桥接层 | `teleop/teleop_bridge.py` | `TeleData` 数据类 + `XRToMuJoCoBridge` + `SimulatedXRSource` |
+| ⭐ 完整链路 | `teleop/run_xr_to_mujoco_demo.py` | XR→桥接→控制器→MuJoCo 串联演示 |
+
+### 链路架构
+
+```
+XR 输入 (SimulatedXRSource) → 桥接层 (XRToMuJoCoBridge)
+    → 末端目标位置 → 控制器 (BimanualController) → MuJoCo 仿真机器人
+```
+
+### 运行演示
+
+```bash
+# 0. 快速测试桥接层
+conda run -n mujoco_vla python teleop/teleop_bridge.py
+
+# 1. 无 viewer（快速测试 + 数据保存）
+conda run -n mujoco_vla python teleop/run_xr_to_mujoco_demo.py --mode circle --steps 1500
+
+# 2. 带 MuJoCo 可视化窗口
+conda run -n mujoco_vla python teleop/run_xr_to_mujoco_demo.py --mode circle --viewer
+
+# 3. 切换运动模式
+conda run -n mujoco_vla python teleop/run_xr_to_mujoco_demo.py --mode raise_hands --viewer
+conda run -n mujoco_vla python teleop/run_xr_to_mujoco_demo.py --mode reach --viewer
+conda run -n mujoco_vla python teleop/run_xr_to_mujoco_demo.py --mode wave --viewer
+```
+
+支持 4 种运动模式：`circle` / `reach` / `raise_hands` / `wave`，模拟 XR 手腕运动。
+
+详细技术报告请见 [`docs/stage2_report.md`](./docs/stage2_report.md)。
+
+### 桥接层核心接口
+
+```python
+from teleop.teleop_bridge import SimulatedXRSource, XRToMuJoCoBridge, TeleData
+
+# 1. 创建模拟 XR 源（无硬件也可测试）
+xr_source = SimulatedXRSource(mode="circle")
+
+# 2. 创建桥接层
+bridge = XRToMuJoCoBridge()
+
+# 3. 主循环：获取 XR 数据 → 提取末端目标
+tele_data = xr_source.get_tele_data()
+target_right, target_left = bridge.get_bimanual_targets(tele_data)
+# target_right, target_left → BimanualController.update()
+```
+
+### 阶段 2 验证结果
+
+| 模式 | 右臂平均误差 | 左臂平均误差 | 说明 |
+|------|-------------|-------------|------|
+| `circle` | **2.6 cm** | **1.8 cm** | ✅ 双臂同步画圆 |
+| `reach` | 13.7 cm | 6.5 cm | 大幅前伸运动 |
+| `raise_hands` | 9.3 cm | 1.3 cm | 上举运动 |
+| `wave` | **2.2 cm** | **1.7 cm** | ✅ 右手挥手+左手保持 |
+
+所有模式稳态误差收敛到 ~1mm 级。
+
+---
+
 ## 后续阶段
 
-- **Phase 2**：将 XR Teleoperate 接入 Mujoco（bridge 层 + 坐标转换）
+- ✅ **（已完成）** Phase 2：将 XR Teleoperate 接入 Mujoco（bridge 层 + 坐标转换）
 - **Phase 3**：采集 50 组标准上半身数据
 - **Phase 4**：统一 Benchmark（ACT / GR00T / DP3）
+
 
 详细规划请参见 [`undergrad_mujoco_teleop_plan(1).md`](./undergrad_mujoco_teleop_plan(1).md)。
 
