@@ -54,8 +54,9 @@ mujoco_vla_project/
 │   └── eval_all.sh                    # Benchmark 评估
 │
 ├── teleop/                            # XR 遥操桥接代码 ⭐ 阶段 2 核心
-│   ├── teleop_bridge.py               # ⭐⭐ TeleData + 桥接层 + 模拟 XR 源
-│   └── run_xr_to_mujoco_demo.py       # ⭐  完整链路演示脚本
+│   ├── teleop_bridge.py               # ⭐⭐ TeleData + 桥接层 + SimulatedXRSource + RealXRSource
+│   ├── run_xr_to_mujoco_demo.py       # ⭐  模拟 XR 完整链路演示
+│   └── run_real_xr_to_mujoco.py       # ⭐⭐ 真实 XR 设备完整链路演示
 │
 ├── data/
 │   ├── raw/                           # 原始录制数据
@@ -235,8 +236,9 @@ result = cam.capture()
 
 | 模块 | 文件 | 功能 |
 |------|------|------|
-| ⭐⭐ 桥接层 | `teleop/teleop_bridge.py` | `TeleData` 数据类 + `XRToMuJoCoBridge` + `SimulatedXRSource` |
-| ⭐ 完整链路 | `teleop/run_xr_to_mujoco_demo.py` | XR→桥接→控制器→MuJoCo 串联演示 |
+| ⭐⭐ 桥接层 | `teleop/teleop_bridge.py` | `TeleData` 数据类 + `XRToMuJoCoBridge` + `SimulatedXRSource` + `RealXRSource` |
+| ⭐ 模拟链路 | `teleop/run_xr_to_mujoco_demo.py` | 模拟 XR→桥接→控制器→MuJoCo 串联演示 |
+| ⭐⭐ 真实链路 | `teleop/run_real_xr_to_mujoco.py` | 真实 XR 设备→桥接→控制器→MuJoCo 串联演示 |
 
 ### 链路架构
 
@@ -267,10 +269,31 @@ conda run -n mujoco_vla python teleop/run_xr_to_mujoco_demo.py --mode wave --vie
 
 详细技术报告请见 [`docs/stage2_report.md`](./docs/stage2_report.md)。
 
+### 真实 XR 设备运行
+
+```bash
+# 先安装 televuer 依赖
+cd third_party/xr_teleoperate/teleop/televuer && pip install -e .
+
+# 确保 conda 环境已激活
+conda activate mujoco_vla
+
+# pass-through 模式（默认，仅需 WebSocket 端口）
+python teleop/run_real_xr_to_mujoco.py \
+    --host-ip 192.168.123.2 --viewer
+
+# 手柄跟踪模式
+python teleop/run_real_xr_to_mujoco.py \
+    --host-ip 192.168.123.2 --use-controller --viewer
+```
+
+
+详细配置步骤（SSL 证书、防火墙、XR 设备连接）请见 [`docs/stage2_report.md`](./docs/stage2_report.md) 第 10 节。
+
 ### 桥接层核心接口
 
 ```python
-from teleop.teleop_bridge import SimulatedXRSource, XRToMuJoCoBridge, TeleData
+from teleop.teleop_bridge import SimulatedXRSource, RealXRSource, XRToMuJoCoBridge, TeleData
 
 # 1. 创建模拟 XR 源（无硬件也可测试）
 xr_source = SimulatedXRSource(mode="circle")

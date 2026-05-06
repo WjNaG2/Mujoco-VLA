@@ -23,10 +23,17 @@ teleop_bridge.py —— XR 输入 → MuJoCo 桥接层
         # target_right, target_left 可直接喂给 EndEffectorController.update()
 """
 
+import sys
+
+# 强制 stdout/stderr 行缓冲，确保 conda run 下实时输出
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
 import time
+
 
 
 # ============================================================
@@ -210,6 +217,183 @@ class SimulatedXRSource:
         left_pos = self._init_left_pos.copy()
 
         return right_pos, left_pos
+
+
+# ============================================================
+# 2a. RealXRSource —— 真实 XR 设备输入源（包装 TeleVuerWrapper）
+# ============================================================
+
+class RealXRSource:
+    """
+    真实 XR 设备输入源，包装 xr_teleoperate 仓库的 TeleVuerWrapper。
+
+    与 SimulatedXRSource 拥有相同的 get_tele_data() 接口，
+    可在 run_xr_to_mujoco_demo.py 中互换使用。
+
+    依赖:
+        - xr_teleoperate/teleop/televuer 已安装（pip install -e .）
+        - SSL 证书已配置
+        - XR 设备与主机在同一局域网
+
+    使用示例:
+        source = RealXRSource(host_ip="192.168.123.2")
+        tele_data = source.get_tele_data()
+        # tele_data.right_wrist_pose[:3, 3] → 右手腕 3D 位置
+    """
+
+    def __init__(self,
+                 host_ip: str = "192.168.123.2",
+                 port: int = 8012,
+                 use_hand_tracking: bool = True,
+                 display_mode: str = "pass-through",
+                 cert_file: str = None,
+                 key_file: str = None,
+                 img_server_ip: str = "192.168.123.164",
+                 wait_for_device: bool = True,
+                 connection_timeout: float = 300.0):
+        """
+        参数:
+            host_ip:         主机 IP 地址（XR 设备通过此地址连接 Vuer 服务）
+            port:            Vuer WebSocket 端口（默认 8012）
+            use_hand_tracking: True = 手势跟踪, False = 手柄跟踪
+            display_mode:    "immersive" / "pass-through" / "ego"
+            cert_file:       SSL 证书路径（如为 None 则自动搜索）
+            key_file:        SSL 私钥路径
+            img_server_ip:   图像服务器 IP（仅 immersive/ego 模式需要）
+            wait_for_device: 是否在初始化后等待 XR 设备连接（默认 True）
+            connection_timeout: 等待设备连接的超时时间（秒，默认 300）
+        """
+        self.host_ip = host_ip
+        self.port = port
+        self.use_hand_tracking = use_hand_tracking
+        self.display_mode = display_mode
+        self.img_server_ip = img_server_ip
+        self._connected = False
+
+        # 尝试导入 TeleVuerWrapper
+        try:
+            from televuer import TeleVuerWrapper as _TeleVuerWrapper
+        except ImportError:
+            raise ImportError(
+                "无法导入 TeleVuerWrapper。请确保 xr_teleoperate/teleop/televuer 已安装:\n"
+                "  cd third_party/xr_teleoperate/teleop/televuer && pip install -e ."
+            )
+
+        # 自动搜索证书文件
+        if cert_file is None or key_file is None:
+            import os as _os
+            _home = _os.path.expanduser("~")
+            _config_dir = _os.path.join(_home, ".config", "xr_teleoperate")
+            _cert_path = _os.path.join(_config_dir, "cert.pem")
+            _key_path = _os.path.join(_config_dir, "key.pem")
+            if _os.path.isfile(_cert_path) and _os.path.isfile(_key_path):
+                cert_file = _cert_path
+                key_file = _key_path
+            else:
+                cert_file = _os.environ.get("XR_TELEOP_CERT", cert_file)
+                key_file = _os.environ.get("XR_TELEOP_KEY", key_file)
+
+        # 初始化 TeleVuerWrapper
+        self._wrapper = _TeleVuerWrapper(
+            use_hand_tracking=use_hand_tracking,
+            binocular=False,
+            img_shape=(480, 640),
+            display_fps=30.0,
+            display_mode=display_mode,
+            zmq=False,
+            webrtc=False,
+            cert_file=cert_file,
+            key_file=key_file,
+        )
+
+        print(f"[RealXRSource] 初始化完成")
+        print(f"  Host IP: {host_ip}:{port}")
+        print(f"  跟踪模式: {'手势' if use_hand_tracking else '手柄'}")
+        print(f"  显示模式: {display_mode}")
+        print(f"  证书路径: cert={cert_file}, key={key_file}")
+        print(f"  请在 XR 设备浏览器中访问: https://{host_ip}:{port}/?ws=wss://{host_ip}:{port}")
+
+        # 等待 XR 设备连接
+        if wait_for_device:
+            self.wait_for_connection(timeout=connection_timeout)
+
+    def _is_device_connected(self) -> bool:
+        """
+        检查 XR 设备是否已连接。
+
+        直接检查底层 TeleVuer 的原始 left_arm_pose / right_arm_pose 属性。
+        在没有设备连接时，这些属性是**全零矩阵**（shared memory 初始值）。
+        只有当 XR 设备通过 WebSocket 发送数据后，on_hand_move / on_controller_move
+        回调才会更新这些值，使其不再是全零。
+
+        注意：不能检查 get_tele_data() 的输出，因为 safe_mat_update 在检测到
+        行列式为 0 时会返回默认常量矩阵，导致无法区分"无设备"和"有设备但静止"。
+        """
+        tv = self._wrapper.tvuer
+        left_is_zero = np.allclose(tv.left_arm_pose, 0, atol=1e-6)
+        right_is_zero = np.allclose(tv.right_arm_pose, 0, atol=1e-6)
+        return not (left_is_zero or right_is_zero)
+
+    def wait_for_connection(self, timeout: float = 300.0):
+        """
+        等待 XR 设备首次发送有效数据。
+
+        直接检查底层 TeleVuer 的原始 left_arm_pose / right_arm_pose 是否
+        不再是全零矩阵（全零 = 从未收到过 XR 数据）。
+
+        参数:
+            timeout: 超时时间（秒），默认 300 秒（5 分钟）
+        """
+        print(f"\n  ⏳ 正在等待 XR 设备连接（超时 {timeout:.0f} 秒）...")
+        print(f"  请戴上 XR 设备并确保双手在设备视野内...")
+
+        poll_interval = 0.5  # 每 0.5 秒检查一次
+        elapsed = 0.0
+
+        while elapsed < timeout:
+            if self._is_device_connected():
+                self._connected = True
+                print(f"  ✅ XR 设备已连接！（等待 {elapsed:.1f} 秒）")
+                return
+
+            # 打印进度
+            if elapsed > 0 and int(elapsed) % 5 == 0 and elapsed - int(elapsed) < poll_interval:
+                print(f"  ⏳ 等待中 ({elapsed:.0f}s)... 请确保双手在 XR 设备视野内")
+
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+        # 超时
+        print(f"\n  ❌ 等待 XR 设备连接超时（{timeout:.0f} 秒）")
+        print(f"  请检查:")
+        print(f"    1. XR 设备是否已开机并连接到同一局域网")
+        print(f"    2. 是否已在浏览器中访问 https://{self.host_ip}:{self.port}")
+        print(f"    3. 是否已点击 Virtual Reality 按钮并允许权限")
+        print(f"    4. 防火墙端口 {self.port} 是否已开放")
+        print(f"  仿真将不会启动，请修复后重试。\n")
+        raise ConnectionError(
+            f"XR 设备连接超时（{timeout:.0f} 秒）。\n"
+            f"请确保:\n"
+            f"  1. XR 设备已开机并连接到同一局域网\n"
+            f"  2. 已在浏览器中访问 https://{self.host_ip}:{self.port}\n"
+            f"  3. 已点击 Virtual Reality 按钮并允许权限\n"
+            f"  4. 防火墙端口 {self.port} 已开放"
+        )
+
+
+    def get_tele_data(self):
+        """
+        获取真实 XR 设备的 TeleData。
+
+        返回:
+            TeleData 实例（与 SimulatedXRSource.get_tele_data() 返回类型相同）
+        """
+        return self._wrapper.get_tele_data()
+
+    def close(self):
+        """关闭 TeleVuerWrapper 连接"""
+        self._wrapper.close()
+
 
 
 # ============================================================

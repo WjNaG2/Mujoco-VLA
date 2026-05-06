@@ -31,8 +31,9 @@ XR 输入 → 中间桥接层 → MuJoCo 上半身末端目标 → 仿真机器�
 ```
 mujoco_vla_project/
 └── teleop/                                    ★ 新增目录：遥操桥接层
-    ├── teleop_bridge.py           ★★ 核心：TeleData 数据类 + XRToMuJoCoBridge
-    └── run_xr_to_mujoco_demo.py   ★  完整链路演示主脚本
+    ├── teleop_bridge.py           ★★ 核心：TeleData 数据类 + XRToMuJoCoBridge + RealXRSource
+    ├── run_xr_to_mujoco_demo.py   ★  模拟 XR 完整链路演示主脚本
+    └── run_real_xr_to_mujoco.py   ★★ 真实 XR 设备完整链路演示主脚本
 
 data/samples/
     └── xr_teleop_demo/                         ★ 新增：XR 遥操演示输出
@@ -50,7 +51,7 @@ docs/
 
 ### 3.1 `teleop/teleop_bridge.py` —— 桥接层（核心）
 
-本模块包含三个组件：
+本模块包含四个组件：
 
 #### 3.1.1 `TeleData` 数据类
 
@@ -100,7 +101,24 @@ target_right, target_left = bridge.get_bimanual_targets(tele_data)
 # target_right, target_left 可直接喂给 BimanualController.update()
 ```
 
-### 3.2 `teleop/run_xr_to_mujoco_demo.py` —— 完整链路演示
+#### 3.1.4 `RealXRSource` —— 真实 XR 设备输入源
+
+包装 xr_teleoperate 仓库的 `TeleVuerWrapper`，拥有与 `SimulatedXRSource` 相同的 `get_tele_data()` 接口，可在 `run_xr_to_mujoco_demo.py` 中直接互换使用。
+
+**核心逻辑**：初始化时自动搜索 SSL 证书（`~/.config/xr_teleoperate/cert.pem`），创建 `TeleVuerWrapper` 实例。后续每次调用 `get_tele_data()` 都从真实 XR 设备获取最新的手腕/头部位姿数据。
+
+**依赖安装**：
+```bash
+cd third_party/xr_teleoperate/teleop/televuer && pip install -e .
+```
+
+**使用示例**：
+```python
+source = RealXRSource(host_ip="192.168.123.2")
+tele_data = source.get_tele_data()  # 与 SimulatedXRSource 接口相同
+```
+
+### 3.2 `teleop/run_xr_to_mujoco_demo.py` —— 模拟 XR 完整链路演示
 
 将四个组件串联起来的主脚本：
 
@@ -120,6 +138,32 @@ for step in range(steps):
     env.step()                                        # E. 仿真推进
     obs = env.get_observation()                       # F. 记录状态
 ```
+
+### 3.3 `teleop/run_real_xr_to_mujoco.py` —— 真实 XR 设备完整链路演示
+
+与 `run_xr_to_mujoco_demo.py` 结构完全相同，唯一区别是使用 `RealXRSource` 替代 `SimulatedXRSource`。主循环流程不变：
+
+```python
+# A. 从真实 XR 设备获取 tele_data（替换模拟数据源）
+tele_data = xr_source.get_tele_data()
+
+# B. 桥接层提取末端目标
+target_right, target_left = bridge.get_bimanual_targets(tele_data)
+
+# C-D. 控制器与仿真实例与模拟版本完全一致
+controller.update(target_right, target_left)
+env.set_joint_targets(controller.get_joint_targets())
+env.step()
+```
+
+支持两个跟踪模式：
+- **手势跟踪**（默认）：无需手柄，直接识别手部位置
+- **手柄跟踪**（`--use-controller`）：通过 XR 控制器获取位姿
+
+支持三种显示模式：
+- `pass-through`（默认）：透视模式，无需图像传输
+- `immersive`：沉浸模式，需图像服务器
+- `ego`：第一人称模式，需图像服务器
 
 ---
 
@@ -269,6 +313,9 @@ XR 头显/手柄 → Unitree SDK → TeleVuerWrapper.get_tele_data() → TeleDat
 | XR 目标点可视化（viewer 模式） | ✅ | 红/蓝 mocap 球实时更新 |
 | 支持多种运动模式 | ✅ | circle / reach / raise_hands / wave |
 | 输出数据可复现、可分析 | ✅ | episode_data.npz + tracking_error.png + summary.txt |
+| RealXRSource 类（包装 TeleVuerWrapper） | ✅ | 与 SimulatedXRSource 相同 `get_tele_data()` 接口 |
+| run_real_xr_to_mujoco.py 完整链路 | ✅ | 真实 XR 设备 → bridge → controller → env 完整流程 |
+| 真实 XR 接入教程（stage2_report.md 第10节） | ✅ | SSL 配置、防火墙、设备连接三步骤教程 |
 
 ---
 
@@ -289,9 +336,124 @@ XR 头显/手柄 → Unitree SDK → TeleVuerWrapper.get_tele_data() → TeleDat
 
 ---
 
-## 10. 参考文献
+## 10. 真实 XR 设备接入教程
+
+### 10.1 准备工作
+
+#### 硬件要求
+- **XR 设备**：支持 WebXR 的 VR 头显（Pico 4 / Pico 4 Ultra / Apple Vision Pro / Meta Quest 系列）
+- **主机**：运行 MuJoCo 仿真的 Linux 主机
+- **网络**：XR 设备与主机在同一局域网（建议 5GHz WiFi）
+
+#### 软件依赖
+
+```bash
+# 1. 安装 xr_teleoperate 的 televuer 包
+cd third_party/xr_teleoperate/teleop/televuer
+pip install -e .
+
+# 2. 如果使用 immersive/ego 显示模式，还需要安装 teleimager
+cd ../teleimager
+pip install -e .
+
+# 3. 配置 SSL 证书（xr_teleoperate 要求 HTTPS/WSS）
+#    生成自签名证书到 ~/.config/xr_teleoperate/
+mkdir -p ~/.config/xr_teleoperate
+openssl req -x509 -newkey rsa:4096 -keyout ~/.config/xr_teleoperate/key.pem \
+    -out ~/.config/xr_teleoperate/cert.pem -days 3650 -nodes \
+    -subj "/CN=localhost"
+# 证书将生成到 ~/.config/xr_teleoperate/cert.pem 和 key.pem
+# 也可通过环境变量指定路径: export XR_TELEOP_CERT=/path/to/cert.pem
+```
+
+### 10.2 防火墙配置
+
+```bash
+# 开放 Vuer WebSocket 端口
+sudo ufw allow 8012
+
+# 如果使用 ZMQ（图像传输），还需开放以下端口
+sudo ufw allow 5555
+sudo ufw allow 5556
+```
+
+### 10.3 运行步骤
+
+#### 步骤 1：启动仿真 + XR 服务
+
+```bash
+# 确保 conda 环境已激活（conda activate mujoco_vla），直接 python 运行
+python teleop/run_real_xr_to_mujoco.py \
+    --host-ip 192.168.123.2 --viewer
+
+
+```
+
+将 `192.168.123.2` 替换为你的主机局域网 IP 地址。
+
+
+#### 步骤 2：在 XR 设备浏览器中连接
+
+1. 在 XR 设备上打开浏览器（Pico 浏览器 / Safari / Meta Quest Browser）
+2. 访问：`https://192.168.123.2:8012/?ws=wss://192.168.123.2:8012`
+3. 点击页面上的 **Virtual Reality** 按钮
+4. 如果提示权限请求（摄像头、运动追踪等），点击"允许"
+5. 连接成功后，终端会显示 XR 设备连接信息
+
+#### 步骤 3：开始遥操
+
+自动开始——主循环启动后，XR 手部/手柄运动将实时映射到 MuJoCo 机器人手臂。
+
+### 10.4 运行参数说明
+
+```bash
+# pass-through 模式（默认，仅需 WebSocket 端口）
+python teleop/run_real_xr_to_mujoco.py \
+    --host-ip 192.168.123.2 --viewer
+
+# 手柄跟踪（替代手势跟踪）
+python teleop/run_real_xr_to_mujoco.py \
+    --host-ip 192.168.123.2 --use-controller --viewer
+
+# 沉浸模式（在 XR 设备中看到 MuJoCo 场景）
+python teleop/run_real_xr_to_mujoco.py \
+    --host-ip 192.168.123.2 --display-mode immersive \
+    --img-server-ip 192.168.123.164 --viewer
+
+# 指定步数（默认 3000，约 1-2 分钟）
+python teleop/run_real_xr_to_mujoco.py \
+    --host-ip 192.168.123.2 --steps 10000 --viewer
+
+
+```
+
+### 10.5 常见问题
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| `ImportError: cannot import TeleVuerWrapper` | televuer 未安装 | `cd third_party/xr_teleoperate/teleop/televuer && pip install -e .` |
+| `Connection refused / Timeout` | IP 地址错误或防火墙未开放 | 检查 `--host-ip` 是否正确，运行 `sudo ufw allow 8012` |
+| `SSL: CERTIFICATE_VERIFY_FAILED` | 证书未配置 | 运行 `mkdir -p ~/.config/xr_teleoperate && openssl req -x509 -newkey rsa:4096 -keyout ~/.config/xr_teleoperate/key.pem -out ~/.config/xr_teleoperate/cert.pem -days 3650 -nodes -subj "/CN=localhost"` |
+| XR 设备无法访问页面 | 同一局域网？端口 OK？ | 用手机浏览器测试 `https://192.168.123.2:8012` 是否可访问 |
+| 手势识别不准确 | 环境光线不足或摄像头遮挡 | 确保 XR 设备摄像头区域清晰可见、光线充足 |
+| 手腕位置超出 MuJoCo 工作空间 | 真实 XR 手部运动范围大于仿真臂 | 静待控制器收敛，或调高 `--kp` 增益 |
+
+### 10.6 无 XR 设备时的调试方法
+
+如果暂时没有 XR 设备，用 `run_xr_to_mujoco_demo.py`（模拟数据）替代：
+
+```bash
+conda run -n mujoco_vla python teleop/run_xr_to_mujoco_demo.py --mode circle --viewer
+```
+
+这使开发者可以在没有 XR 硬件的情况下验证链路完整性。两种数据源使用完全相同的桥接层和控制器代码。
+
+---
+
+## 11. 参考文献
 
 - [xr_teleoperate 仓库](https://github.com/unitreerobotics/xr_teleoperate) — TeleData 数据结构源头
 - [`docs/stage1_report.md`](./stage1_report.md) — 阶段 1 技术报告（场景 + 控制器 + RGBD 相机）
 - [`teleop/teleop_bridge.py`](../teleop/teleop_bridge.py) — 桥接层源码
-- [`teleop/run_xr_to_mujoco_demo.py`](../teleop/run_xr_to_mujoco_demo.py) — 完整链路演示源码
+- [`teleop/run_xr_to_mujoco_demo.py`](../teleop/run_xr_to_mujoco_demo.py) — 模拟 XR 完整链路演示
+- [`teleop/run_real_xr_to_mujoco.py`](../teleop/run_real_xr_to_mujoco.py) — 真实 XR 设备完整链路演示
