@@ -294,13 +294,15 @@ class RealXRSource:
                 key_file = _os.environ.get("XR_TELEOP_KEY", key_file)
 
         # 初始化 TeleVuerWrapper
+        # immersive / ego 模式需要 zmq=True 或 webrtc=True 来传输图像到 VR 头显
+        _use_zmq = display_mode in ("immersive", "ego")
         self._wrapper = _TeleVuerWrapper(
             use_hand_tracking=use_hand_tracking,
             binocular=False,
             img_shape=(480, 640),
             display_fps=30.0,
             display_mode=display_mode,
-            zmq=False,
+            zmq=_use_zmq,
             webrtc=False,
             cert_file=cert_file,
             key_file=key_file,

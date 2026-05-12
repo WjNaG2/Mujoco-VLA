@@ -406,6 +406,24 @@ python teleop/run_real_xr_to_mujoco.py \
 
 ### 10.4 运行参数说明
 
+#### 命令行参数列表
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--host-ip` | `192.168.123.2` | 主机 IP 地址，XR 设备通过此地址连接 Vuer WebSocket 服务 |
+| `--port` | `8012` | Vuer WebSocket 端口 |
+| `--display-mode` | `pass-through` | XR 头显显示模式：`pass-through`（透视，无需图像服务器）/ `immersive`（沉浸，需 ZMQ 传输）/ `ego`（第一人称，需 ZMQ 传输） |
+| `--img-server-ip` | `192.168.123.164` | 图像服务器 IP（仅 `immersive`/`ego` 模式需要） |
+| `--use-controller` | `False` | 使用手柄跟踪（默认使用手势跟踪） |
+| `--steps` | `3000` | 仿真总步数（MuJoCo 默认 dt=0.002s，3000 步 ≈ 6 秒仿真时间） |
+| `--viewer` | `False` | 启用 MuJoCo 交互式可视化窗口（按 ESC 退出） |
+| `--kp` | `3.0` | IK 控制器比例增益，越大响应越快但可能振荡 |
+| `--cert-file` | `自动搜索` | SSL 证书路径（默认搜索 `~/.config/xr_teleoperate/cert.pem`） |
+| `--key-file` | `自动搜索` | SSL 私钥路径（默认搜索 `~/.config/xr_teleoperate/key.pem`） |
+| `--connection-timeout` | `300.0` | 等待 XR 设备连接的超时时间（秒） |
+
+#### 典型运行命令
+
 ```bash
 # pass-through 模式（默认，仅需 WebSocket 端口）
 python teleop/run_real_xr_to_mujoco.py \
@@ -427,6 +445,7 @@ python teleop/run_real_xr_to_mujoco.py \
 
 ```
 
+
 ### 10.5 常见问题
 
 | 问题 | 原因 | 解决 |
@@ -436,9 +455,110 @@ python teleop/run_real_xr_to_mujoco.py \
 | `SSL: CERTIFICATE_VERIFY_FAILED` | 证书未配置 | 运行 `mkdir -p ~/.config/xr_teleoperate && openssl req -x509 -newkey rsa:4096 -keyout ~/.config/xr_teleoperate/key.pem -out ~/.config/xr_teleoperate/cert.pem -days 3650 -nodes -subj "/CN=localhost"` |
 | XR 设备无法访问页面 | 同一局域网？端口 OK？ | 用手机浏览器测试 `https://192.168.123.2:8012` 是否可访问 |
 | 手势识别不准确 | 环境光线不足或摄像头遮挡 | 确保 XR 设备摄像头区域清晰可见、光线充足 |
-| 手腕位置超出 MuJoCo 工作空间 | 真实 XR 手部运动范围大于仿真臂 | 静待控制器收敛，或调高 `--kp` 增益 |
+| `ValueError: immersive mode requires zmq=True` | `display_mode=immersive` 但 `zmq=False`，代码写死导致冲突 | ✅ 已修复 `teleop_bridge.py`：改用 `_use_zmq = display_mode in ("immersive", "ego")` 自动适配 |
+| pass-through 模式下 MuJoCo 约 1 秒后闪退/崩溃 | XR 手部跟踪初始数据产生的工作空间外目标导致 IK 计算异常，MuJoCo 物理引擎 segfault | 见下方第 10.6 节详细分析 |
 
-### 10.6 无 XR 设备时的调试方法
+
+
+### 10.6 pass-through 模式下 MuJoCo 闪退/崩溃分析
+
+#### 症状
+
+进入 pass-through 模式后，XR 设备连接成功并开始传输数据，约 1 秒后 MuJoCo 仿真进程 segfault（段错误），终端输出 `segmentation fault (core dumped)`。
+
+#### 根因分析
+
+这是因为 **真实 XR 设备的初始手腕位置超出 MuJoCo 3-DOF 臂的工作空间**，导致 IK 控制器计算出的关节角度失控，最终 MuJoCo 物理引擎因关节限位冲突或数值发散而崩溃。
+
+**数据流中的问题链路**：
+
+```
+XR 设备手部跟踪初始数据
+    ↓
+RealXRSource.get_tele_data()
+    ↓ 右手腕位置可能落在例如 (0.5, -0.3, 0.1)  —— y 和 z 不在安全范围
+    ↓
+XRToMuJoCoBridge.get_bimanual_targets() → 直接提取位置
+    ↓
+BimanualController.update(target=[0.5, -0.3, 0.1])
+    ↓ IK 求解试图将末端拉到不可达位置
+    ↓
+mujoco.mj_step() → segfault（关节角度越界/雅可比奇异/数值爆炸）
+```
+
+**根本原因有两个层面**：
+
+1. **XR 坐标系 → MuJoCo 工作空间不匹配**（主要原因）：
+   - `TeleVuerWrapper.get_tele_data()` 返回的 `right_wrist_pose` 和 `left_wrist_pose` 是在 **Unitree 人形机器人坐标系**下定义的（躯干原点在腰部，z 向上）
+   - 但我们 MuJoCo 场景 (`simple_end_effector_scene.xml`) 的 3-DOF 臂只有 **有限的三角工作空间**（见第 4 节）
+   - XR 设备返回的初始手部位置可能在 XR 坐标系下是合理的，但映射到 MuJoCo 坐标系后落在工作空间之外
+
+2. **无目标位置裁切/限制**：
+   - `XRToMuJoCoBridge` 直接提取 `pose[:3, 3]` 作为末端目标，不做任何范围检查
+   - IK 控制器收到不可达目标后，产生极大的关节速度指令
+   - `_clamp_joint_targets()` 虽然限制了关节角度，但极端的控制量仍可能在 transient 阶段造成 MuJoCo 数值不稳定
+
+#### 解决方案（二选一）
+
+**方案 A：在桥接层中加入目标位置裁剪（推荐）**
+
+修改 `XRToMuJoCoBridge.get_bimanual_targets()` 方法，将目标位置限制在第 4 节定义的安全工作空间内：
+
+```python
+# 在 XRToMuJoCoBridge 中增加裁剪逻辑
+RIGHT_SAFE_RANGE = {
+    "x": (0.22, 0.65),
+    "y": (-0.20, 0.20),
+    "z": (0.15, 0.65),
+}
+LEFT_SAFE_RANGE = {
+    "x": (-0.15, 0.35),
+    "y": (-0.20, 0.20),
+    "z": (0.15, 0.65),
+}
+
+def _clamp_to_workspace(self, pos, side):
+    safe = self.RIGHT_SAFE_RANGE if side == "right" else self.LEFT_SAFE_RANGE
+    pos[0] = np.clip(pos[0], safe["x"][0], safe["x"][1])
+    pos[1] = np.clip(pos[1], safe["y"][0], safe["y"][1])
+    pos[2] = np.clip(pos[2], safe["z"][0], safe["z"][1])
+    return pos
+```
+
+**方案 B：使用更柔性的控制器初始化**
+
+在 `BimanualController.reset()` 中从当前关节位置计算初始末端位置作为第一帧目标（而非直接使用 XR 数据），让控制器从零误差开始逐步跟踪：
+
+```python
+# 在进入主循环前，把控制器目标初始化为当前末端位置
+obs = env.get_observation()
+controller.update(obs["r_ee_pos"], obs["l_ee_pos"])
+```
+
+这样前几帧的误差为 0，控制器输出的关节速度为 0，避免初始瞬间给 MuJoCo 发送极端控制量。
+
+**方案 C：检查并修正坐标系映射**
+
+在 `XRToMuJoCoBridge` 中加入偏移参数，将 XR 世界的手腕位置偏移到与 MuJoCo 场景对齐：
+- 目前 XR 返回的手腕位置是基于 "head-relative" 坐标系（`get_tele_data()` 中先做了 `head_pose` 减法，再做了 `(0.15, 0, 0.45)` 的偏移，见 `tv_wrapper.py` 第 294-308 行）
+- 这个坐标系是为 Unitree 人形机器人设计的（腰部原点），与我们的上半身场景不兼容
+- 需要根据实际 XR 头部跟踪数据进行坐标系重映射
+
+#### 调试建议
+
+如果再次遇到闪退，可以加一个 try-except 并打印出导致崩溃的目标位置：
+
+```python
+# 在主循环中，打印每一帧的目标位置
+print(f"Step {step}: right_target={target_right}, left_target={target_left}")
+```
+
+如果看到 `target_right[1]`（y 方向）超出 ±0.2 或 `target_right[2]`（z 方向）低于 0.15，说明确认是工作空间越界问题。
+
+---
+
+### 10.7 无 XR 设备时的调试方法
+
 
 如果暂时没有 XR 设备，用 `run_xr_to_mujoco_demo.py`（模拟数据）替代：
 
